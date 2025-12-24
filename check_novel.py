@@ -1,4 +1,4 @@
-import google.generativeai as genai
+from google import genai # <--- เรียกใช้แบบใหม่
 import feedparser
 import requests
 from bs4 import BeautifulSoup
@@ -6,20 +6,18 @@ import time
 import os
 
 # ==========================================
-# ⚙️ ส่วนตั้งค่า (รับค่าจาก GitHub Secrets)
+# ⚙️ ส่วนตั้งค่า
 # ==========================================
-# ระบบจะดึง Key จากตู้เซฟของ GitHub มาใช้เอง อัตโนมัติ
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY") 
 DISCORD_WEBHOOK_URL = os.getenv("DISCORD_WEBHOOK_URL")
 RSS_URL = "https://kakuyomu.jp/works/822139839754922306/rss"
 DB_FILE = "last_episode_discord.txt"
 
-# ตั้งค่า Gemini
+# ตั้งค่า Client ใหม่
 if GEMINI_API_KEY:
-    genai.configure(api_key=GEMINI_API_KEY)
-    model = genai.GenerativeModel('gemini-2.5-pro')
+    client = genai.Client(api_key=GEMINI_API_KEY) # <--- สร้าง Client
 else:
-    print("❌ ไม่พบ GEMINI_API_KEY กรุณาตั้งค่าใน GitHub Secrets")
+    print("❌ ไม่พบ GEMINI_API_KEY")
     exit(1)
 
 # ==========================================
@@ -48,14 +46,18 @@ def translate_with_gemini(text):
     prompt = f"""
     คุณคือนักแปลนิยายไลท์โนเวลมืออาชีพ แปลเนื้อหาต่อไปนี้จากภาษาญี่ปุ่นเป็นภาษาไทย
     - ขอสำนวนวัยรุ่น อ่านง่าย สนุก เป็นธรรมชาติ
-    - ไม่ต้องแปลคำทับศัพท์ที่เกมเมอร์เข้าใจ (เช่น สเตตัส, สกิล)
+    - ไม่ต้องแปลคำทับศัพท์ที่เกมเมอร์เข้าใจ
     - จัดย่อหน้าให้อ่านง่าย
     
     เนื้อหาต้นฉบับ:
     {text}
     """
     try:
-        response = model.generate_content(prompt)
+        # คำสั่งแบบใหม่ (v1.0)
+        response = client.models.generate_content(
+            model='gemini-1.5-flash', 
+            contents=prompt
+        )
         return response.text
     except Exception as e:
         print(f"❌ Translation Error: {e}")
@@ -63,17 +65,14 @@ def translate_with_gemini(text):
 
 def send_to_discord(title, link, content):
     if not DISCORD_WEBHOOK_URL:
-        print("❌ ไม่พบ DISCORD_WEBHOOK_URL")
         return
 
-    # 1. แจ้งเตือนหัวข้อ
     header = {
         "content": f"🚨 **ตอนใหม่มาแล้ว!** 🚨\n\n📖 **{title}**\n🔗 [อ่านต้นฉบับ]({link})\n\n🤖 กำลังแปล... รอสักครู่ครับ",
         "username": "น้องบอทนักแปล"
     }
     requests.post(DISCORD_WEBHOOK_URL, json=header)
     
-    # 2. แบ่งส่งเนื้อหา (Discord รับได้ 2000 ตัวอักษร เราตัดที่ 1900)
     chunk_size = 1900
     chunks = [content[i:i+chunk_size] for i in range(0, len(content), chunk_size)]
     
@@ -81,11 +80,9 @@ def send_to_discord(title, link, content):
         msg = chunk
         if len(chunks) > 1:
             msg = f"**[Part {i+1}/{len(chunks)}]**\n{chunk}"
-            
         requests.post(DISCORD_WEBHOOK_URL, json={"content": msg, "username": "น้องบอทนักแปล"})
-        time.sleep(1) # พักกันโดนบล็อก
+        time.sleep(1)
 
-    # 3. จบ
     requests.post(DISCORD_WEBHOOK_URL, json={"content": "✅ **แปลจบตอนครับ!**", "username": "น้องบอทนักแปล"})
 
 # ==========================================
@@ -93,7 +90,6 @@ def send_to_discord(title, link, content):
 # ==========================================
 
 def main():
-    # สร้างไฟล์ DB เปล่าๆ ถ้ายังไม่มี (ป้องกัน error ครั้งแรก)
     if not os.path.exists(DB_FILE):
         with open(DB_FILE, "w") as f: f.write("")
 
@@ -104,17 +100,13 @@ def main():
     
     if latest:
         print(f"🔍 เช็คเจอ: {latest.title}")
-        
         if latest.link != last_link:
             print("✨ พบตอนใหม่! เริ่มดำเนินการ...")
             raw_content = get_novel_content(latest.link)
-            
             if raw_content:
                 translated_text = translate_with_gemini(raw_content)
                 if translated_text:
                     send_to_discord(latest.title, latest.link, translated_text)
-                    
-                    # อัปเดตลิงก์ล่าสุด
                     with open(DB_FILE, "w") as f:
                         f.write(latest.link)
                     print("💾 บันทึกสถานะเรียบร้อย")
