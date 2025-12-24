@@ -1,0 +1,28 @@
+name: Check Novel Update
+on:
+  schedule:
+    - cron: '0 */3 * * *' # รันทุก 3 ชั่วโมง
+  workflow_dispatch: # ปุ่มกดรันเองได้ด้วย
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v2
+      - name: Set up Python
+        uses: actions/setup-python@v2
+        with:
+          python-version: '3.x'
+      - name: Install dependencies
+        run: pip install feedparser requests beautifulsoup4 deep-translator
+      - name: Run script
+        run: python check_novel.py
+        env:
+          LINE_TOKEN: ${{ secrets.LINE_TOKEN }}
+      - name: Commit & Push changes (อัปเดตไฟล์ last_seen.txt กลับไปที่ repo)
+        run: |
+          git config --global user.name 'Bot'
+          git config --global user.email 'bot@noreply.github.com'
+          git add last_seen.txt
+          git commit -m "Update last seen episode" || exit 0
+          git push
