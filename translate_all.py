@@ -106,7 +106,15 @@ def get_content_with_retry(url, max_retries=3):
 def translate(text):
     if not text or not client: return None
     
-    prompt = f"แปลนิยายญี่ปุ่นนี้เป็นไทย สำนวนวัยรุ่น อ่านง่าย:\n{text}"
+    prompt = f"""
+    คุณคือนักแปลนิยายไลท์โนเวลมืออาชีพ แปลเนื้อหาต่อไปนี้จากภาษาญี่ปุ่นเป็นภาษาไทย
+    - ขอสำนวนวัยรุ่น อ่านง่าย สนุก เป็นธรรมชาติ
+    - ไม่ต้องแปลคำทับศัพท์ที่เกมเมอร์เข้าใจ
+    - จัดย่อหน้าให้อ่านง่าย
+    
+    เนื้อหาต้นฉบับ:
+    {text}
+    """
     try:
         response = client.models.generate_content(
             model='gemini-2.5-pro',
