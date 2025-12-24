@@ -36,7 +36,7 @@ class Episode:
     def __init__(self, title, link, ep_id):
         self.title = title
         self.link = link
-        self.ep_id = int(ep_id) # เก็บ ID ไว้สำหรับเรียงลำดับ
+        self.ep_id = int(ep_id)
 
 def get_all_episodes():
     print(f"📖 กำลังโหลดหน้าสารบัญ: {NOVEL_MAIN_URL}")
@@ -47,15 +47,11 @@ def get_all_episodes():
             return []
 
         soup = BeautifulSoup(response.text, 'html.parser')
-        
-        # Regex ดึงทั้ง Link และ ID ตอน (group 1)
-        # Pattern: /works/xxxx/episodes/(ตัวเลขID)
         target_pattern = re.compile(r'/works/\d+/episodes/(\d+)')
         
         episodes = []
         seen_ids = set()
         
-        # หาลิงก์ทั้งหมด
         raw_links = soup.find_all('a', href=target_pattern)
 
         for tag in raw_links:
@@ -63,14 +59,13 @@ def get_all_episodes():
             match = target_pattern.search(href)
             if not match: continue
             
-            ep_id = match.group(1) # ดึงตัวเลข ID ตอน
-            
-            # ป้องกันซ้ำ
+            ep_id = match.group(1)
             if ep_id in seen_ids: continue
             seen_ids.add(ep_id)
 
             full_link = "https://kakuyomu.jp" + href if href.startswith('/') else href
-
+            
+            # พยายามหาชื่อตอนให้ได้
             title = tag.text.strip()
             if not title:
                 span = tag.find('span')
@@ -78,61 +73,50 @@ def get_all_episodes():
 
             episodes.append(Episode(title, full_link, ep_id))
 
-        # ✅ หัวใจสำคัญ: เรียงลำดับตาม ID (น้อยไปมาก = ตอนแรกไปตอนล่าสุด)
+        # เรียงลำดับตาม ID
         episodes.sort(key=lambda x: x.ep_id)
         
-        print(f"✅ พบทั้งหมด {len(episodes)} ตอน (เรียงลำดับแล้ว)")
+        print(f"✅ พบทั้งหมด {len(episodes)} ตอน")
         return episodes
 
     except Exception as e:
         print(f"❌ Error checking main page: {e}")
         return []
 
-def get_content(url):
-    try:
-        response = scraper.get(url)
-        soup = BeautifulSoup(response.text, 'html.parser')
-        body = soup.select_one('.widget-episodeBody')
-        return body.get_text(separator="\n", strip=True) if body else None
-    except Exception as e:
-        print(f"   ❌ Error content: {e}")
-        return None
+def get_content_with_retry(url, max_retries=3):
+    """ฟังก์ชันดึงเนื้อหาแบบมี Retry (ลองใหม่ถ้าพลาด)"""
+    for attempt in range(max_retries):
+        try:
+            response = scraper.get(url, timeout=15) # เพิ่ม timeout
+            if response.status_code == 200:
+                soup = BeautifulSoup(response.text, 'html.parser')
+                body = soup.select_one('.widget-episodeBody')
+                if body:
+                    return body.get_text(separator="\n", strip=True)
+            
+            print(f"   ⚠️พยายามครั้งที่ {attempt+1} ล้มเหลว (Status: {response.status_code})...")
+            time.sleep(2) # พักก่อนลองใหม่
+            
+        except Exception as e:
+            print(f"   ⚠️พยายามครั้งที่ {attempt+1} Error: {e}")
+            time.sleep(2)
+            
+    return None # ถ้าครบ 3 รอบแล้วยังไม่ได้ ให้คืนค่า None
 
 def translate(text):
     if not text or not client: return None
     
-    prompt = prompt = f"""
-    คุณคือนักแปลนิยายไลท์โนเวลมืออาชีพ แปลเนื้อหาต่อไปนี้จากภาษาญี่ปุ่นเป็นภาษาไทย
-    - ขอสำนวนวัยรุ่น อ่านง่าย สนุก เป็นธรรมชาติ
-    - ไม่ต้องแปลคำทับศัพท์ที่เกมเมอร์เข้าใจ
-    - จัดย่อหน้าให้อ่านง่าย
-    
-    เนื้อหาต้นฉบับ:
-    {text}
-    """
-    
+    prompt = f"แปลนิยายญี่ปุ่นนี้เป็นไทย สำนวนวัยรุ่น อ่านง่าย:\n{text}"
     try:
         response = client.models.generate_content(
-            model='gemini-2.5-pro',
+            model='gemini-3-pro',
             contents=prompt,
             config=types.GenerateContentConfig(
                 safety_settings=[
-                    types.SafetySetting(
-                        category='HARM_CATEGORY_HARASSMENT',
-                        threshold='BLOCK_NONE'
-                    ),
-                    types.SafetySetting(
-                        category='HARM_CATEGORY_HATE_SPEECH',
-                        threshold='BLOCK_NONE'
-                    ),
-                    types.SafetySetting(
-                        category='HARM_CATEGORY_SEXUALLY_EXPLICIT',
-                        threshold='BLOCK_NONE'
-                    ),
-                    types.SafetySetting(
-                        category='HARM_CATEGORY_DANGEROUS_CONTENT',
-                        threshold='BLOCK_NONE'
-                    )
+                    types.SafetySetting(category='HARM_CATEGORY_HARASSMENT', threshold='BLOCK_NONE'),
+                    types.SafetySetting(category='HARM_CATEGORY_HATE_SPEECH', threshold='BLOCK_NONE'),
+                    types.SafetySetting(category='HARM_CATEGORY_SEXUALLY_EXPLICIT', threshold='BLOCK_NONE'),
+                    types.SafetySetting(category='HARM_CATEGORY_DANGEROUS_CONTENT', threshold='BLOCK_NONE')
                 ]
             )
         )
@@ -144,11 +128,12 @@ def translate(text):
 def send_discord(ep_num, title, link, content):
     if not DISCORD_WEBHOOK_URL: return
     
-    # ✅ ใส่เลขตอน (Episode Number) ในหัวข้อ
+    # ส่งหัวข้อ
     requests.post(DISCORD_WEBHOOK_URL, json={
         "content": f"📚 **[ตอนที่ {ep_num}] {title}**\n🔗 {link}\n*(กำลังแปล...)*"
     })
     
+    # ส่งเนื้อหา
     chunk_size = 1900
     chunks = [content[i:i+chunk_size] for i in range(0, len(content), chunk_size)]
     for i, chunk in enumerate(chunks):
@@ -156,38 +141,51 @@ def send_discord(ep_num, title, link, content):
         requests.post(DISCORD_WEBHOOK_URL, json={"content": msg})
         time.sleep(1)
     
+    # ส่งจบ
     requests.post(DISCORD_WEBHOOK_URL, json={"content": f"✅ **จบตอนที่ {ep_num}**"})
+
+def send_discord_error(ep_num, title, link):
+    """แจ้งเตือน Error เข้า Discord"""
+    if not DISCORD_WEBHOOK_URL: return
+    requests.post(DISCORD_WEBHOOK_URL, json={
+        "content": f"⚠️ **[ข้ามตอนที่ {ep_num}]** เกิดข้อผิดพลาดในการดึงข้อมูล\n📖 {title}\n🔗 {link}"
+    })
 
 # ==========================================
 # 🚀 Main Loop (Batch)
 # ==========================================
 
 def main():
-    print("🚀 เริ่มระบบแปลย้อนหลัง (เรียงตามลำดับตอน)...")
+    print("🚀 เริ่มระบบแปลย้อนหลัง (V.2 - Retry)...")
     
     all_episodes = get_all_episodes()
     
     if not all_episodes:
-        print("❌ ไม่พบตอน หรือเว็บเข้าไม่ได้")
+        print("❌ ไม่พบตอน")
         return
 
-    # เริ่มลูป (ใช้ enumerate เพื่อสร้างเลขตอน 1, 2, 3...)
+    # เริ่มจาก i=1 (ตอนที่ 1)
     for i, ep in enumerate(all_episodes, start=1):
         print(f"\n[{i}/{len(all_episodes)}] กำลังทำ: ตอนที่ {i} - {ep.title}")
         
-        content = get_content(ep.link)
+        # 1. ดึงเนื้อหา (แบบ Retry)
+        content = get_content_with_retry(ep.link)
+        
         if not content:
-            print(f"   ❌ ข้าม (ดึงเนื้อหาไม่ได้): {ep.link}")
+            print(f"   ❌ ข้าม (ดึงเนื้อหาไม่ได้หลังจากลอง 3 รอบ)")
+            send_discord_error(i, ep.title, ep.link) # แจ้ง Discord ว่าข้าม
             continue
 
+        # 2. แปล
         print("   ⏳ แปลภาษา...")
         translated = translate(content)
         if not translated:
             print("   ❌ ข้าม (แปลไม่ผ่าน)")
+            send_discord_error(i, ep.title, ep.link)
             continue
 
+        # 3. ส่ง Discord
         print("   🚀 ส่ง Discord...")
-        # ส่งเลขตอน (i) เข้าไปด้วย
         send_discord(i, ep.title, ep.link, translated)
 
         with open(DB_FILE, "w") as f:
