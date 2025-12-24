@@ -2,7 +2,7 @@ name: Auto Translate Novel
 
 on:
   schedule:
-    - cron: '0 */3 * * *' # รันทุกๆ 3 ชั่วโมง (ปรับเวลาตรงเลข 3 ได้)
+    - cron: '0 12 * * *' # รันทุกๆ 3 ชั่วโมง (ปรับเวลาตรงเลข 3 ได้)
   workflow_dispatch: # ปุ่มกดรันเองด้วยมือ
 
 permissions:
