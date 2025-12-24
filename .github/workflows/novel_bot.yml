@@ -19,16 +19,15 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v4
         with:
-          python-version: '3.9'
+          python-version: '3.11'
 
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install google-generativeai feedparser requests beautifulsoup4
+          pip install google-genai feedparser requests beautifulsoup4
 
       - name: Run Script
         env:
-          # ดึงค่า Key จาก GitHub Secrets มาใส่ในตัวแปร Environment
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
         run: python check_novel.py
@@ -37,7 +36,6 @@ jobs:
         run: |
           git config --global user.name "Auto Bot"
           git config --global user.email "bot@noreply.github.com"
-          # ตรวจสอบว่าไฟล์มีการเปลี่ยนแปลงไหม ถ้ามีค่อย Commit
           git add last_episode_discord.txt
           git commit -m "Update last episode database" || echo "No changes to commit"
           git push
