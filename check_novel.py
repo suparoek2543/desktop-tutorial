@@ -36,10 +36,9 @@ class Episode:
         self.link = link
 
 def get_latest_episode_from_web():
-    """แกะหน้าเว็บสารบัญเพื่อหาตอนล่าสุด"""
+    """แกะหน้าเว็บสารบัญเพื่อหาตอนล่าสุด (ใช้วิธีหา Pattern Link)"""
     print(f"กำลังเช็คหน้านิยายหลัก: {NOVEL_MAIN_URL}")
     try:
-        # ใช้ scraper แทน requests
         response = scraper.get(NOVEL_MAIN_URL)
         
         if response.status_code != 200:
@@ -48,27 +47,43 @@ def get_latest_episode_from_web():
 
         soup = BeautifulSoup(response.text, 'html.parser')
         
-        # เช็ค Title เพื่อดูว่าเข้าถูกหน้าไหม
         page_title = soup.title.text.strip() if soup.title else "No Title"
         print(f"✅ เข้าถึงหน้าเว็บ: {page_title[:30]}...") 
 
-        # ค้นหาลิงก์ตอนทั้งหมด
-        episode_links = soup.select('.widget-toc-episode a')
+        # --- วิธีใหม่: หา Link ที่มีคำว่า /episodes/ ตัวเลข ---
+        # Pattern คือ /works/เลขไอดี/episodes/เลขไอดี
+        target_pattern = re.compile(r'/works/\d+/episodes/\d+')
+        
+        episode_links = soup.find_all('a', href=target_pattern)
         
         if episode_links:
-            last_ep = episode_links[-1] # เอาตัวสุดท้าย (ล่าสุด)
+            # Kakuyomu มักจะเรียงตอนจาก บน -> ล่าง (เก่า -> ใหม่)
+            # แต่บางทีอาจมีลิงก์ "ตอนล่าสุด" อยู่ข้างบนสุดแยกต่างหาก
+            # ดังนั้นเราจะดึง "ตัวสุดท้ายของลิสต์" ซึ่งมักจะเป็นตอนล่าสุดเสมอ
+            last_ep = episode_links[-1]
             
-            # ดึงชื่อตอน
-            title_span = last_ep.select_one('.widget-toc-episode-titleLabel')
-            title = title_span.text.strip() if title_span else "No Title"
+            # ดึงชื่อตอน (ถ้าไม่มี text ใน a ให้ลองหา span ข้างใน)
+            title = last_ep.text.strip()
+            if not title:
+                # ลองหาจาก span class (เผื่อมันซ่อนอยู่ข้างใน)
+                span = last_ep.find('span')
+                if span: title = span.text.strip()
+                else: title = "ตอนล่าสุด (ไม่ทราบชื่อ)"
             
-            # ดึงลิงก์
-            link = "https://kakuyomu.jp" + last_ep['href']
+            # ดึงลิงก์ (ต้องต่อ domain ให้ครบ)
+            href = last_ep['href']
+            if href.startswith('/'):
+                link = "https://kakuyomu.jp" + href
+            else:
+                link = href
             
             return Episode(title, link)
         else:
-            print("❌ ไม่พบรายการตอน (อาจโดนบล็อก หรือ Class เปลี่ยน)")
-            # print(response.text[:500]) # ปล่อยบรรทัดนี้เพื่อดู HTML ที่ได้มา
+            print("❌ ไม่พบลิงก์ตอนนิยายเลย (ลอง Save HTML ดูโครงสร้าง)")
+            # Debug: บันทึกไฟล์ HTML ออกมาดูว่าหน้าตาเป็นยังไง
+            with open("debug_page.html", "w", encoding="utf-8") as f:
+                f.write(response.text)
+            print("⚠️ บันทึกไฟล์ debug_page.html ไว้ให้ตรวจสอบแล้ว")
             return None
 
     except Exception as e:
