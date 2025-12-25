@@ -32,30 +32,20 @@ scraper = cloudscraper.create_scraper(
 )
 
 # ==========================================
-# 🛠️ ฟังก์ชันช่วยแปล (เพิ่มใหม่)
+# 🛠️ ฟังก์ชันช่วยแปล
 # ==========================================
 
 def translate_title(text):
-    """ฟังก์ชันสำหรับแปลชื่อเรื่อง/ชื่อตอน ให้สั้น กระชับ น่าสนใจ"""
-    if not client or not text: return text # ถ้าไม่มี Key ให้คืนค่าเดิม
-    
+    if not client or not text: return text
     prompt = f"""
     Translate this Japanese novel title to Thai.
-    Target audience: Teenagers / Light Novel readers.
-    Style: Catchy, Short, Natural.
-    
-    Strict Rules:
-    1. Output ONLY the translated text.
-    2. No explanations, no notes, no options.
-    
-    Original Text:
-    {text}
+    Style: Catchy, Short, Natural (Teenager/Light Novel style).
+    Strict Rules: Output ONLY the translated text. No explanations.
+    Original: {text}
     """
     try:
-        # ใช้ Flash Model เพื่อความไว
-        response = client.models.generate_content(
-            model='gemini-2.5-pro', 
-            contents=prompt,
+        res = client.models.generate_content(
+            model='gemini-2.5-pro', contents=prompt,
             config=types.GenerateContentConfig(safety_settings=[
                 types.SafetySetting(category='HARM_CATEGORY_HARASSMENT', threshold='BLOCK_NONE'),
                 types.SafetySetting(category='HARM_CATEGORY_HATE_SPEECH', threshold='BLOCK_NONE'),
@@ -63,30 +53,22 @@ def translate_title(text):
                 types.SafetySetting(category='HARM_CATEGORY_DANGEROUS_CONTENT', threshold='BLOCK_NONE')
             ])
         )
-        if response.text:
-            return response.text.strip().replace("ชื่อเรื่อง:", "").replace("แปล:", "").strip()
-        return text
-    except:
-        return text # ถ้า Error ให้ใช้ชื่อญี่ปุ่นไปก่อน
+        return res.text.strip().replace('"', '') if res.text else text
+    except: return text
 
 # ==========================================
 # 🛠️ ฟังก์ชันจัดการ JSON
 # ==========================================
 
 def get_novel_title():
-    """ดึงชื่อนิยาย + แปลเป็นไทย"""
-    print(f"📖 กำลังดึงและแปลชื่อเรื่องจาก: {NOVEL_MAIN_URL}")
+    print(f"📖 กำลังดึงชื่อเรื่องจาก: {NOVEL_MAIN_URL}")
     try:
         response = scraper.get(NOVEL_MAIN_URL)
         soup = BeautifulSoup(response.text, 'html.parser')
-        
         title_elem = soup.select_one('#workTitle') or soup.select_one('h1')
         raw_title = title_elem.text.strip() if title_elem else "นิยายไม่ทราบชื่อ"
-        
-        # 🟢 สั่งแปลชื่อเรื่องตรงนี้
         thai_title = translate_title(raw_title)
-        
-        print(f"✅ ชื่อไทย: {thai_title} (Original: {raw_title})")
+        print(f"✅ ชื่อไทย: {thai_title}")
         return thai_title
     except Exception as e:
         print(f"❌ ดึงชื่อเรื่องไม่ได้: {e}")
@@ -103,20 +85,14 @@ def save_to_json(novel_title, ep_data):
             except: data = {}
 
     novel_id = NOVEL_MAIN_URL
+    if novel_id not in data: data[novel_id] = { "title": novel_title, "chapters": [] }
     
-    if novel_id not in data:
-        data[novel_id] = { "title": novel_title, "chapters": [] }
-    
-    # อัปเดตชื่อเรื่องให้เป็นไทยเสมอ (เผื่อแก้คำแปล)
     data[novel_id]["title"] = novel_title
-    
     chapters = data[novel_id]["chapters"]
     existing_idx = next((index for (index, d) in enumerate(chapters) if d["link"] == ep_data["link"]), None)
     
-    if existing_idx is not None:
-        chapters[existing_idx] = ep_data
-    else:
-        chapters.append(ep_data)
+    if existing_idx is not None: chapters[existing_idx] = ep_data
+    else: chapters.append(ep_data)
         
     data[novel_id]["chapters"] = chapters
 
@@ -125,7 +101,7 @@ def save_to_json(novel_title, ep_data):
         print(f"💾 บันทึกตอนที่ {ep_data['ep_id']} ลง JSON แล้ว")
 
 # ==========================================
-# 🛠️ ฟังก์ชัน Crawler (เหมือนเดิม)
+# 🛠️ ฟังก์ชัน Crawler & Smart Translate
 # ==========================================
 
 def load_history():
@@ -137,12 +113,12 @@ def save_to_history(url):
 
 def get_first_episode_url():
     try:
-        response = scraper.get(NOVEL_MAIN_URL)
-        soup = BeautifulSoup(response.text, 'html.parser')
-        l = soup.select_one('a#readFromFirstEpisode')
+        r = scraper.get(NOVEL_MAIN_URL)
+        s = BeautifulSoup(r.text, 'html.parser')
+        l = s.select_one('a#readFromFirstEpisode')
         if l: return urljoin(NOVEL_MAIN_URL, l['href'])
         ts = re.compile(r'/works/\d+/episodes/\d+')
-        ls = soup.find_all('a', href=ts)
+        ls = s.find_all('a', href=ts)
         if ls: 
             sl = sorted(ls, key=lambda x: int(re.search(r'episodes/(\d+)', x['href']).group(1)))
             return urljoin(NOVEL_MAIN_URL, sl[0]['href'])
@@ -171,22 +147,20 @@ def get_content_and_next_link(url, max=3):
 def translate_smart(text, retry_count=0):
     if not client or not text: return None, "Error"
     
-    # --- 🛡️ กลยุทธ์ 1-3: พยายามแปลทั้งก้อน ---
+    # 4 Strategies: Normal -> Soften -> Summary -> Split
     prompts = [
-        # รอบ 0: ปกติ
         f"แปลนิยายญี่ปุ่นนี้เป็นไทย สำนวนวัยรุ่น (เก็บอารมณ์ครบ):\n{text[:15000]}",
-        # รอบ 1: Soften
         f"แปลโดยเลี่ยงคำล่อแหลมและรุนแรง (Soft Version):\n{text[:15000]}",
-        # รอบ 2: Summary
         f"สรุปเนื้อเรื่องตอนนี้เป็นภาษาไทย (ตัดฉากเรททิ้ง เล่าแค่เหตุการณ์):\n{text[:15000]}"
     ]
 
+    # Strategy 1-3
     if retry_count < 3:
         try:
             prompt = prompts[retry_count]
             if retry_count > 0: print(f"   🔧 แก้เกมรอบที่ {retry_count}...")
             
-            response = client.models.generate_content(
+            res = client.models.generate_content(
                 model='gemini-2.5-pro', 
                 contents=prompt,
                 config=types.GenerateContentConfig(safety_settings=[
@@ -196,56 +170,40 @@ def translate_smart(text, retry_count=0):
                     types.SafetySetting(category='HARM_CATEGORY_DANGEROUS_CONTENT', threshold='BLOCK_NONE')
                 ])
             )
-            if response.text and response.text.strip(): return response.text, None
+            if res.text and res.text.strip(): return res.text, None
         except Exception as e:
             if "429" in str(e): time.sleep(10); return translate_smart(text, retry_count)
-            pass # ถ้า Error อื่นๆ ให้หลุดไปทำรอบถัดไป
+            pass 
         
-        # ถ้าไม่ผ่าน ให้ลองรอบถัดไป
         time.sleep(2)
         return translate_smart(text, retry_count + 1)
 
-    # --- ✂️ กลยุทธ์ 4 (ไม้ตาย): หั่นครึ่งแล้วแปลทีละส่วน ---
+    # Strategy 4: Split Mode
     if retry_count == 3:
-        print("   ⚔️ ไม้ตายสุดท้าย: หั่นครึ่งแล้วแปล (Split Mode)...")
+        print("   ⚔️ ไม้ตายสุดท้าย: หั่นครึ่งแล้วแปล...")
         try:
             mid = len(text) // 2
-            part1 = text[:mid]
-            part2 = text[mid:]
-            
-            # แปลส่วนแรก
-            res1, err1 = translate_smart(part1, retry_count=1) # ใช้โหมด Soften แปล
-            # แปลส่วนหลัง
-            res2, err2 = translate_smart(part2, retry_count=1) # ใช้โหมด Soften แปล
-            
-            # รวมร่าง
-            full_text = ""
-            full_text += res1 if res1 else "⚠️ [ส่วนแรกแปลไม่ผ่าน]\n"
-            full_text += "\n\n--- (ต่อ) ---\n\n"
-            full_text += res2 if res2 else "⚠️ [ส่วนหลังแปลไม่ผ่าน]\n"
-            
-            return full_text, None
-        except Exception as e:
-            return None, f"ยอมแพ้แล้วจริงๆ ({e})"
-            
-    # ถ้าหลุดมาถึงตรงนี้คือไม่ไหวแล้ว
-    fallback = "⚠️ เนื้อหาตอนนี้แรงเกินไป ระบบไม่สามารถแปลได้ (กรุณาอ่านต้นฉบับ)"
-    return fallback, None
+            r1, _ = translate_smart(text[:mid], 1)
+            r2, _ = translate_smart(text[mid:], 1)
+            full = (r1 or "") + "\n\n--- (ต่อ) ---\n\n" + (r2 or "")
+            if len(full) > 50: return full, None
+        except: pass
+
+    # Failed
+    return "⚠️ เนื้อหาตอนนี้แรงเกินไป ระบบไม่สามารถแปลได้ (กรุณาอ่านต้นฉบับ)", None
+
 # ==========================================
-# 🚀 Main Loop
+# 🚀 Main Loop (แก้ไข logic การบันทึก)
 # ==========================================
 
 def main():
-    print("🚀 เริ่มระบบ Web Novel (แปลไทยสมบูรณ์แบบ)...")
+    print("🚀 เริ่มระบบ Web Novel...")
     
-    # 1. แปลชื่อเรื่องก่อน
     novel_title = get_novel_title()
-    
     completed_urls = load_history()
     current_url = get_first_episode_url()
     
-    if not current_url: 
-        print("❌ หาตอนแรกไม่เจอ"); return
+    if not current_url: print("❌ หาตอนแรกไม่เจอ"); return
 
     ep_count = 1
     
@@ -256,16 +214,12 @@ def main():
             print("   ⏩ มีในประวัติแล้ว -> ข้าม")
             data = get_content_and_next_link(current_url) 
             if data and data['next_link']:
-                current_url = data['next_link']
-                ep_count += 1
-                continue
-            else:
-                break
+                current_url = data['next_link']; ep_count += 1; continue
+            else: break
 
         data = get_content_and_next_link(current_url)
         if not data: break
 
-        # 🟢 สั่งแปลชื่อตอนตรงนี้
         print(f"   ⏳ กำลังแปลชื่อตอน: {data['title']}")
         thai_chapter_title = translate_title(data['title'])
         
@@ -273,20 +227,25 @@ def main():
         translated_content, err = translate_smart(data['content'])
         
         if translated_content:
-            print(f"   ✅ แปลเสร็จ -> บันทึก")
+            # ✅ ตรวจสอบว่าใช่ข้อความ Error หรือไม่
+            is_error_message = "⚠️" in translated_content and "ไม่สามารถแปลได้" in translated_content
             
             ep_data = {
                 "ep_id": data['ep_id'],
-                "title": thai_chapter_title, # ใช้ชื่อไทยที่แปลแล้ว
+                "title": thai_chapter_title,
                 "content": translated_content,
                 "link": current_url
             }
-            
             save_to_json(novel_title, ep_data)
-            save_to_history(current_url)
-            completed_urls.add(current_url)
+            
+            if is_error_message:
+                print("   ⚠️ ติด Safety -> บันทึกแจ้งเตือนลงเว็บ แต่ [ไม่บันทึกประวัติ] (รอรันใหม่)")
+            else:
+                print("   ✅ แปลเสร็จสมบูรณ์ -> บันทึกประวัติ")
+                save_to_history(current_url)
+                completed_urls.add(current_url)
         else:
-            print(f"   ❌ เนื้อหาไม่ผ่าน: {err}")
+            print(f"   ❌ เนื้อหาไม่ผ่านเลย: {err}")
 
         if data['next_link']:
             print("   ➡️ ไปตอนถัดไป...")
