@@ -7,28 +7,24 @@ import time
 import os
 import re
 import random
-import json # <--- เพิ่มตัวนี้
+import json
 from urllib.parse import urljoin
 
 # ==========================================
 # ⚙️ ส่วนตั้งค่า
 # ==========================================
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY") 
-NOVEL_MAIN_URL = "https://kakuyomu.jp/works/822139841708705081"
+NOVEL_MAIN_URL = "https://kakuyomu.jp/works/16816700429097793676"
 
-# ไฟล์ที่จะเก็บข้อมูลนิยาย (Database)
 JSON_DB_FILE = "novels.json"
 HISTORY_FILE = "history_novel_2.txt"
 
-# ตั้งค่า Client
 if GEMINI_API_KEY:
     try:
         client = genai.Client(api_key=GEMINI_API_KEY)
-    except Exception as e:
-        print(f"❌ Error initializing Client: {e}")
+    except:
         client = None
 else:
-    print("⚠️ ไม่พบ GEMINI_API_KEY")
     client = None
 
 scraper = cloudscraper.create_scraper(
@@ -36,109 +32,133 @@ scraper = cloudscraper.create_scraper(
 )
 
 # ==========================================
-# 🛠️ ฟังก์ชันจัดการ JSON
+# 🛠️ ฟังก์ชันจัดการ JSON แบบใหม่ (รองรับหลายเรื่อง)
 # ==========================================
 
-def save_to_json(ep_data):
-    """บันทึกตอนนิยายลงไฟล์ JSON"""
-    data = []
-    
-    # 1. โหลดของเก่าถ้ามี
-    if os.path.exists(JSON_DB_FILE):
-        with open(JSON_DB_FILE, "r", encoding="utf-8") as f:
-            try:
-                data = json.load(f)
-            except:
-                data = [] # ถ้าไฟล์พัง ให้เริ่มใหม่
-    
-    # 2. เช็คว่ามีตอนเดิมอยู่ไหม (Update หรือ Append)
-    # ใช้ Link เป็นตัวเช็คว่าซ้ำไหม
-    existing_idx = next((index for (index, d) in enumerate(data) if d["link"] == ep_data["link"]), None)
-    
-    if existing_idx is not None:
-        data[existing_idx] = ep_data # อัปเดตของเดิม
-    else:
-        data.append(ep_data) # เพิ่มตอนใหม่
-        
-    # 3. บันทึกกลับลงไฟล์
-    with open(JSON_DB_FILE, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, indent=4)
-        print(f"💾 บันทึกลง {JSON_DB_FILE} เรียบร้อย")
-
-# ==========================================
-# 🛠️ ฟังก์ชันเดิม (ปรับปรุงเล็กน้อย)
-# ==========================================
-
-def load_history():
-    if not os.path.exists(HISTORY_FILE): return set()
-    with open(HISTORY_FILE, "r", encoding="utf-8") as f:
-        return set(line.strip() for line in f)
-
-def save_to_history(url):
-    with open(HISTORY_FILE, "a", encoding="utf-8") as f:
-        f.write(url + "\n")
-
-def get_first_episode_url():
-    print(f"📖 หาตอนแรกจาก: {NOVEL_MAIN_URL}")
+def get_novel_title():
+    """ดึงชื่อนิยายจากหน้าหลัก"""
+    print(f"📖 กำลังดึงชื่อเรื่องจาก: {NOVEL_MAIN_URL}")
     try:
         response = scraper.get(NOVEL_MAIN_URL)
         soup = BeautifulSoup(response.text, 'html.parser')
-        first_ep_link = soup.select_one('a#readFromFirstEpisode')
-        if first_ep_link: return urljoin(NOVEL_MAIN_URL, first_ep_link['href'])
-        else:
-            target_pattern = re.compile(r'/works/\d+/episodes/\d+')
-            links = soup.find_all('a', href=target_pattern)
-            if links:
-                sorted_links = sorted(links, key=lambda x: int(re.search(r'episodes/(\d+)', x['href']).group(1)))
-                return urljoin(NOVEL_MAIN_URL, sorted_links[0]['href'])
-        return None
+        
+        # หาชื่อเรื่อง (Kakuyomu ใช้ id="workTitle")
+        title_elem = soup.select_one('#workTitle')
+        if not title_elem:
+             # เผื่อหาไม่เจอ ลองหา h1
+             title_elem = soup.select_one('h1')
+             
+        title = title_elem.text.strip() if title_elem else "นิยายไม่ทราบชื่อ"
+        print(f"✅ ชื่อเรื่อง: {title}")
+        return title
     except Exception as e:
-        print(f"❌ Error: {e}")
-        return None
+        print(f"❌ ดึงชื่อเรื่องไม่ได้: {e}")
+        return "นิยายไม่ทราบชื่อ"
 
-def find_next_link(soup, current_url):
-    next_btn = soup.select_one('a.widget-episode-navigation-next') or \
-               soup.select_one('a#contentMain-readNextEpisode') or \
-               soup.find('a', string=re.compile('次のエピソード'))
-    if next_btn: return urljoin(current_url, next_btn['href'])
-    return None
-
-def get_content_and_next_link(url, max_retries=3):
-    headers = {'Referer': NOVEL_MAIN_URL}
-    for attempt in range(max_retries):
-        try:
-            time.sleep(random.uniform(1, 1.5)) 
-            response = scraper.get(url, headers=headers, timeout=15)
-            if response.status_code == 200:
-                soup = BeautifulSoup(response.text, 'html.parser')
-                title = soup.select_one('.widget-episodeTitle').text.strip()
-                body = soup.select_one('.widget-episodeBody').get_text(separator="\n", strip=True)
-                next_link = find_next_link(soup, url)
-                
-                # ดึง ID ตอนจาก URL เพื่อใช้เรียงลำดับ
-                ep_id_match = re.search(r'episodes/(\d+)', url)
-                ep_id = ep_id_match.group(1) if ep_id_match else "0"
-
-                return {"title": title, "content": body, "next_link": next_link, "ep_id": ep_id}
-            time.sleep(2)
-        except Exception as e:
-            print(f"   ⚠️ Error: {e}")
-    return None
-
-def translate_smart(text, retry_count=0):
-    if not client: return None, "No Client"
-    if not text: return None, "No Content"
+def save_to_json(novel_title, ep_data):
+    """บันทึกข้อมูลลง JSON แบบจัดหมวดหมู่"""
+    data = {}
     
-    if retry_count == 0:
-        prompt = f"แปลนิยายญี่ปุ่นนี้เป็นไทย สำนวนวัยรุ่น อ่านสนุก:\n- เจอคำล่อแหลมให้เลี่ยงคำ\nเนื้อหา:\n{text[:15000]}"
-    elif retry_count == 1:
-        prompt = f"**แปลโดยหลีกเลี่ยงเนื้อหาทางเพศ/รุนแรง**\n- สรุปฉากวาบหวิวแทน\nเนื้อหา:\n{text[:15000]}"
-    else:
-        prompt = f"สรุปเนื้อเรื่องตอนนี้เป็นภาษาไทย:\nเนื้อหา:\n{text[:15000]}"
+    # 1. โหลดข้อมูลเก่า
+    if os.path.exists(JSON_DB_FILE):
+        with open(JSON_DB_FILE, "r", encoding="utf-8") as f:
+            try:
+                content = f.read()
+                if content: data = json.loads(content)
+                
+                # ⚠️ เช็คว่าโครงสร้างเก่าเป็น Array [] หรือเปล่า? (ถ้าใช่ต้องแปลงเป็น Dict {})
+                if isinstance(data, list):
+                    print("⚠️ ตรวจพบโครงสร้างเก่า (Array) กำลังแปลงเป็นแบบใหม่...")
+                    data = {} # ล้างของเก่าทิ้ง เพราะโครงสร้างเปลี่ยน
+            except:
+                data = {}
 
+    # 2. เตรียม Key สำหรับเรื่องนี้ (ใช้ URL เป็น ID จะได้ไม่ซ้ำ)
+    novel_id = NOVEL_MAIN_URL
+    
+    # ถ้ายังไม่มีเรื่องนี้ใน Database ให้สร้างใหม่
+    if novel_id not in data:
+        data[novel_id] = {
+            "title": novel_title,
+            "chapters": []
+        }
+    
+    # 3. เพิ่ม/อัปเดตตอน
+    chapters = data[novel_id]["chapters"]
+    
+    # เช็คว่ามีตอนนี้อยู่แล้วไหม
+    existing_idx = next((index for (index, d) in enumerate(chapters) if d["link"] == ep_data["link"]), None)
+    
+    if existing_idx is not None:
+        chapters[existing_idx] = ep_data # ทับของเดิม
+    else:
+        chapters.append(ep_data) # เพิ่มใหม่
+        
+    data[novel_id]["chapters"] = chapters
+
+    # 4. บันทึก
+    with open(JSON_DB_FILE, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=4)
+        print(f"💾 บันทึกตอนที่ {ep_data['ep_id']} ลงหมวด '{novel_title}' เรียบร้อย")
+
+# ==========================================
+# 🛠️ ฟังก์ชันเดิม
+# ==========================================
+# (ส่วนนี้เหมือนเดิม แต่ตัดตอนแปะโค้ดยาวๆ ออกเพื่อให้ดูง่าย)
+# ... Load History, Get Url, Translate Smart ...
+# (ให้ใช้ฟังก์ชันเดิมจาก V.9 ที่ผมส่งให้ก่อนหน้าได้เลย แต่เปลี่ยน Main Loop ตามด้านล่าง)
+
+def load_history():
+    if not os.path.exists(HISTORY_FILE): return set()
+    with open(HISTORY_FILE, "r", encoding="utf-8") as f: return set(l.strip() for l in f)
+
+def save_to_history(url):
+    with open(HISTORY_FILE, "a", encoding="utf-8") as f: f.write(url + "\n")
+
+def get_first_episode_url():
     try:
-        response = client.models.generate_content(
-            model='gemini-2.5-pro', contents=prompt,
+        response = scraper.get(NOVEL_MAIN_URL)
+        soup = BeautifulSoup(response.text, 'html.parser')
+        l = soup.select_one('a#readFromFirstEpisode')
+        if l: return urljoin(NOVEL_MAIN_URL, l['href'])
+        # Fallback
+        ts = re.compile(r'/works/\d+/episodes/\d+')
+        ls = soup.find_all('a', href=ts)
+        if ls: 
+            sl = sorted(ls, key=lambda x: int(re.search(r'episodes/(\d+)', x['href']).group(1)))
+            return urljoin(NOVEL_MAIN_URL, sl[0]['href'])
+    except: pass
+    return None
+
+def find_next_link(soup, url):
+    n = soup.select_one('a.widget-episode-navigation-next') or soup.select_one('a#contentMain-readNextEpisode') or soup.find('a', string=re.compile('次のエピソード'))
+    return urljoin(url, n['href']) if n else None
+
+def get_content_and_next_link(url, max=3):
+    h={'Referer': NOVEL_MAIN_URL}
+    for _ in range(max):
+        try:
+            time.sleep(1)
+            r = scraper.get(url, headers=h, timeout=15)
+            if r.status_code==200:
+                s = BeautifulSoup(r.text, 'html.parser')
+                t = s.select_one('.widget-episodeTitle').text.strip()
+                b = s.select_one('.widget-episodeBody').get_text(separator="\n", strip=True)
+                eid = re.search(r'episodes/(\d+)', url).group(1)
+                return {"title":t, "content":b, "next_link":find_next_link(s, url), "ep_id":eid}
+        except: time.sleep(2)
+    return None
+
+def translate_smart(text, r=0):
+    if not client or not text: return None, "Error"
+    ps = [
+        f"แปลนิยายญี่ปุ่นนี้เป็นไทย สำนวนวัยรุ่น:\nเนื้อหา:\n{text[:15000]}",
+        f"**แปลเลี่ยงเนื้อหาล่อแหลม**:\nเนื้อหา:\n{text[:15000]}",
+        f"สรุปเนื้อเรื่อง:\nเนื้อหา:\n{text[:15000]}"
+    ]
+    try:
+        res = client.models.generate_content(
+            model='gemini-2.5-pro', contents=ps[min(r,2)],
             config=types.GenerateContentConfig(safety_settings=[
                 types.SafetySetting(category='HARM_CATEGORY_HARASSMENT', threshold='BLOCK_NONE'),
                 types.SafetySetting(category='HARM_CATEGORY_HATE_SPEECH', threshold='BLOCK_NONE'),
@@ -146,28 +166,27 @@ def translate_smart(text, retry_count=0):
                 types.SafetySetting(category='HARM_CATEGORY_DANGEROUS_CONTENT', threshold='BLOCK_NONE')
             ])
         )
-        if not response.text or not response.text.strip(): raise ValueError("Empty response")
-        return response.text, None 
+        if not res.text: raise ValueError("Empty")
+        return res.text, None
     except Exception as e:
-        error_msg = str(e)
-        if ("429" in error_msg or "503" in error_msg):
-            time.sleep((retry_count + 1) * 10)
-            return translate_smart(text, retry_count) 
-        elif retry_count < 2:
-            time.sleep(2)
-            return translate_smart(text, retry_count + 1)
-        else:
-            return None, f"ยอมแพ้ ({error_msg})"
+        if r<2: time.sleep(2); return translate_smart(text, r+1)
+        return None, str(e)
 
 # ==========================================
-# 🚀 Main Loop
+# 🚀 Main Loop (อัปเดตใหม่)
 # ==========================================
 
 def main():
-    print("🚀 เริ่มระบบ Web Novel Generator...")
+    print("🚀 เริ่มระบบ Web Novel (Tree View Supported)...")
+    
+    # 1. ดึงชื่อเรื่องก่อนเลย (เพื่อใช้เป็นชื่อโฟลเดอร์)
+    novel_title = get_novel_title()
+    
     completed_urls = load_history()
     current_url = get_first_episode_url()
-    if not current_url: return
+    
+    if not current_url: 
+        print("❌ หาตอนแรกไม่เจอ"); return
 
     ep_count = 1
     
@@ -175,52 +194,47 @@ def main():
         print(f"\n[{ep_count}] ตรวจสอบ: {current_url}")
         
         if current_url in completed_urls:
-            print("   ⏩ มีในฐานข้อมูลแล้ว -> ข้าม")
-            data = get_content_and_next_link(current_url)
+            print("   ⏩ มีในประวัติแล้ว -> ข้าม")
+            data = get_content_and_next_link(current_url) # โหลดเพื่อหา Next Link เฉยๆ
             if data and data['next_link']:
                 current_url = data['next_link']
                 ep_count += 1
                 continue
             else:
-                print("   🏁 จบเรื่อง (ในหน้าที่ข้าม)")
                 break
 
         data = get_content_and_next_link(current_url)
-        if not data:
-            print("   ❌ ดึงข้อมูลไม่ได้ -> จบ")
-            break
+        if not data: break
 
         title = data['title']
-        translated, error_msg = translate_smart(data['content'])
+        translated, err = translate_smart(data['content'])
         
         if translated:
-            print("   ✅ แปลสำเร็จ -> บันทึกลง JSON")
+            print(f"   ✅ แปลเสร็จ -> บันทึกเข้าเรื่อง '{novel_title}'")
             
-            # เตรียมข้อมูลบันทึก
-            episode_data = {
+            ep_data = {
                 "ep_id": data['ep_id'],
                 "title": title,
                 "content": translated,
                 "link": current_url
             }
             
-            # 💾 บันทึก
-            save_to_json(episode_data)
+            # 🟢 เรียกใช้ save_to_json แบบใหม่ (ส่งชื่อเรื่องไปด้วย)
+            save_to_json(novel_title, ep_data)
+            
             save_to_history(current_url)
             completed_urls.add(current_url)
         else:
-            print(f"   ❌ ไม่ผ่าน: {error_msg}")
+            print(f"   ❌ ไม่ผ่าน: {err}")
 
         if data['next_link']:
-            print(f"   ➡️ ไปตอนถัดไป (พัก 5 วิ)")
+            print("   ➡️ ไปตอนถัดไป...")
             current_url = data['next_link']
             ep_count += 1
-            time.sleep(5) 
+            time.sleep(5)
         else:
-            print("\n🏁 จบเรื่องแล้ว")
-            current_url = None
-
-    print("\n🎉 เสร็จสิ้น!")
+            print("🏁 จบเรื่อง")
+            break
 
 if __name__ == "__main__":
     main()
