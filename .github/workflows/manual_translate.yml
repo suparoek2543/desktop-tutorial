@@ -35,6 +35,6 @@ jobs:
         run: |
           git config --global user.name "Auto Bot"
           git config --global user.email "bot@noreply.github.com"
-          git add last_episode_discord.txt
-          git commit -m "Batch translation complete" || echo "No changes"
+          git add *.txt
+          git commit -m "Update last episode databases" || echo "No changes to commit"
           git push
