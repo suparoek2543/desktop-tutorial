@@ -11,7 +11,7 @@ import re
 # ⚙️ ส่วนตั้งค่า
 # ==========================================
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY") 
-DISCORD_WEBHOOK_URL = os.getenv("DISCORD_WEBHOOK_URL")
+DISCORD_WEBHOOK_URL = os.getenv("WEBHOOK_NOVEL_2")
 NOVEL_MAIN_URL = "https://kakuyomu.jp/works/16816700429097793676"
 DB_FILE = "last_ep_novel_2.txt" 
 
