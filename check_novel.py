@@ -45,11 +45,11 @@ scraper = cloudscraper.create_scraper(
 )
 
 # ==========================================
-# 🛠️ ฟังก์ชันจัดการ JSON (ลงเว็บ)
+# 🛠️ ฟังก์ชันแปลภาษา (Smart System)
 # ==========================================
 
-def translate_short(text):
-    """แปลชื่อตอน/ชื่อเรื่อง"""
+def translate_title(text):
+    """แปลชื่อตอน/ชื่อเรื่อง (สั้นๆ)"""
     if not client or not text: return text
     try:
         res = client.models.generate_content(
@@ -65,8 +65,51 @@ def translate_short(text):
         return res.text.strip() if res.text else text
     except: return text
 
+def translate_smart(text, retry_count=0):
+    """ฟังก์ชันแปลอัจฉริยะ (แก้เกม 3 ชั้น)"""
+    if not client: return None, "No Client"
+    if not text: return None, "No Content"
+    
+    # Strategy Pattern
+    if retry_count == 0:
+        prompt = f"แปลนิยายญี่ปุ่นนี้เป็นไทย สำนวนวัยรุ่น อ่านสนุก:\n- เจอคำล่อแหลมให้เลี่ยงคำ\nเนื้อหา:\n{text[:15000]}"
+    elif retry_count == 1:
+        print("   🔧 ปรับโหมด: Soften (ลดความแรง)")
+        prompt = f"**แปลโดยหลีกเลี่ยงเนื้อหาทางเพศ/รุนแรง**\n- สรุปฉากวาบหวิวแทน\nเนื้อหา:\n{text[:15000]}"
+    else:
+        print("   🔧 ปรับโหมด: Summary (สรุปเนื้อหา)")
+        prompt = f"สรุปเนื้อเรื่องตอนนี้เป็นภาษาไทย:\nเนื้อหา:\n{text[:15000]}"
+
+    try:
+        response = client.models.generate_content(
+            model='gemini-2.5-pro', contents=prompt,
+            config=types.GenerateContentConfig(safety_settings=[
+                types.SafetySetting(category='HARM_CATEGORY_HARASSMENT', threshold='BLOCK_NONE'),
+                types.SafetySetting(category='HARM_CATEGORY_HATE_SPEECH', threshold='BLOCK_NONE'),
+                types.SafetySetting(category='HARM_CATEGORY_SEXUALLY_EXPLICIT', threshold='BLOCK_NONE'),
+                types.SafetySetting(category='HARM_CATEGORY_DANGEROUS_CONTENT', threshold='BLOCK_NONE')
+            ])
+        )
+        if not response.text or not response.text.strip():
+            raise ValueError("Gemini returned empty (Blocked?)")
+        return response.text, None 
+    except Exception as e:
+        error_msg = str(e)
+        if ("429" in error_msg or "503" in error_msg):
+            print(f"   ⚠️ Server Busy. รอ {(retry_count + 1) * 10} วิ...")
+            time.sleep((retry_count + 1) * 10)
+            return translate_smart(text, retry_count) 
+        elif retry_count < 2:
+            time.sleep(2)
+            return translate_smart(text, retry_count + 1)
+        else:
+            return None, f"ยอมแพ้ ({error_msg})"
+
+# ==========================================
+# 🛠️ ฟังก์ชันจัดการ JSON & Discord
+# ==========================================
+
 def save_to_json(novel_url, novel_name_thai, ep_data):
-    """บันทึกตอนใหม่ลง novels.json"""
     data = {}
     if os.path.exists(JSON_DB_FILE):
         with open(JSON_DB_FILE, "r", encoding="utf-8") as f:
@@ -79,9 +122,7 @@ def save_to_json(novel_url, novel_name_thai, ep_data):
     if novel_url not in data:
         data[novel_url] = { "title": novel_name_thai, "chapters": [] }
     
-    # อัปเดตชื่อเรื่องให้เป็นปัจจุบัน
     data[novel_url]["title"] = novel_name_thai
-    
     chapters = data[novel_url]["chapters"]
     existing_idx = next((index for (index, d) in enumerate(chapters) if d["link"] == ep_data["link"]), None)
     
@@ -96,8 +137,15 @@ def save_to_json(novel_url, novel_name_thai, ep_data):
         json.dump(data, f, ensure_ascii=False, indent=4)
         print(f"💾 อัปเดตเว็บแล้ว: {ep_data['title']}")
 
+def send_discord_notification(webhook_url, novel_name, ep_title, link):
+    if not webhook_url: return
+    msg = {
+        "content": f"🚨 **ตอนใหม่มาแล้ว!**\n📚 เรื่อง: **{novel_name}**\n📄 ตอน: **{ep_title}**\n\n🔗 ต้นฉบับ: {link}\n✨ *เนื้อหาแปลไทยอัปเดตลงเว็บแล้วครับ!*"
+    }
+    requests.post(webhook_url, json=msg)
+
 # ==========================================
-# 🛠️ ฟังก์ชันหลัก
+# 🛠️ Crawler Functions
 # ==========================================
 
 class Episode:
@@ -138,34 +186,6 @@ def get_content(url, main_url):
         except: pass
     return None
 
-def translate(text):
-    if not text or not client: return None
-    prompt = f"แปลนิยายญี่ปุ่นนี้เป็นไทย สำนวนวัยรุ่น (เจอฉากล่อแหลมให้เลี่ยงคำ):\n{text[:15000]}"
-    try:
-        res = client.models.generate_content(
-            model='gemini-2.5-pro', contents=prompt,
-            config=types.GenerateContentConfig(safety_settings=[
-                types.SafetySetting(category='HARM_CATEGORY_HARASSMENT', threshold='BLOCK_NONE'),
-                types.SafetySetting(category='HARM_CATEGORY_HATE_SPEECH', threshold='BLOCK_NONE'),
-                types.SafetySetting(category='HARM_CATEGORY_SEXUALLY_EXPLICIT', threshold='BLOCK_NONE'),
-                types.SafetySetting(category='HARM_CATEGORY_DANGEROUS_CONTENT', threshold='BLOCK_NONE')
-            ])
-        )
-        return res.text
-    except: return None
-
-def send_discord_notification(webhook_url, novel_name, ep_title, link):
-    """✅ แจ้งเตือนสั้นๆ ว่ามีตอนใหม่"""
-    if not webhook_url: return
-    
-    # URL ของหน้าเว็บเรา (ถ้ามี GitHub Pages)
-    # web_url = "https://ชื่อคุณ.github.io/ชื่อrepo/"
-    
-    msg = {
-        "content": f"🚨 **ตอนใหม่มาแล้ว!**\n📚 เรื่อง: **{novel_name}**\n📄 ตอน: **{ep_title}**\n\n🔗 ต้นฉบับ: {link}\n✨ *เนื้อหาแปลไทยอัปเดตลงเว็บแล้วครับ!*"
-    }
-    requests.post(webhook_url, json=msg)
-
 # ==========================================
 # 🚀 Main Process
 # ==========================================
@@ -186,15 +206,15 @@ def process_novel(novel):
             
             content = get_content(latest.link, novel['url'])
             if content:
-                # 1. แปลเนื้อหา (เพื่อลงเว็บ)
                 print("⏳ กำลังแปลเนื้อหา...")
-                translated_content = translate(content)
-                
-                # 2. แปลชื่อตอน (เพื่อลงเว็บ)
-                thai_ep_title = translate_short(latest.title)
+                # 🟢 ใช้ translate_smart แทน translate ธรรมดา
+                translated_content, error_msg = translate_smart(content)
                 
                 if translated_content:
-                    # ✅ บันทึกลง JSON (Web)
+                    print("⏳ กำลังแปลชื่อตอน...")
+                    thai_ep_title = translate_title(latest.title)
+                    
+                    # ✅ บันทึกลง JSON
                     ep_data = {
                         "ep_id": str(latest.ep_id),
                         "title": thai_ep_title,
@@ -203,14 +223,14 @@ def process_novel(novel):
                     }
                     save_to_json(novel['url'], novel['name'], ep_data)
                     
-                    # ✅ แจ้งเตือน Discord (Short)
+                    # ✅ Discord
                     print("🚀 แจ้งเตือน Discord...")
                     send_discord_notification(webhook, novel['name'], thai_ep_title, latest.link)
                     
                     # ✅ อัปเดต DB
                     with open(db_file, "w") as f: f.write(latest.link)
                 else:
-                    print("❌ แปลล้มเหลว")
+                    print(f"❌ แปลล้มเหลว: {error_msg}")
             else:
                 print("❌ ดึงเนื้อหาไม่ได้")
         else:
@@ -219,7 +239,7 @@ def process_novel(novel):
         print("❌ เช็คหน้าเว็บไม่สำเร็จ")
 
 def main():
-    print("🤖 Daily Bot Checking...")
+    print("🤖 Daily Bot Checking (Smart V.2)...")
     for novel in NOVEL_LIST:
         process_novel(novel)
         print("-" * 30)
