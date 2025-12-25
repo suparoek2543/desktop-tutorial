@@ -28,7 +28,7 @@ jobs:
       - name: Run Batch Script
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+          DISCORD_WEBHOOK_URL: ${{ secrets.WEBHOOK_NOVEL_2 }}
         run: python translate_all.py
 
       - name: Commit and Push DB
